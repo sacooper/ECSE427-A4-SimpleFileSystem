@@ -203,7 +203,7 @@ int sfs_fopen(char *name){
 
             for (j = 0; j < filesOpen; j++){
                 if (file_descriptor_table[j] && root_directory[i].indx == file_descriptor_table[j]->start)
-                    return -1;
+                    return j;
             }
 
             for (j = 0; j < filesOpen; j++){
@@ -234,11 +234,6 @@ int sfs_fopen(char *name){
 
     for (i = 0; i < BLOCKSIZE; i++){
         if (strncmp(root_directory[i].name, "\0", 1) == 0){
-            int start = first_open();
-            if (start == -1){
-                fprintf(stderr, "Unable to create file %s", name);
-                return -1;}
-            set_used(start);
 
             int fd = -1, j;
             for (j = 0; j < filesOpen; j++){
@@ -261,6 +256,21 @@ int sfs_fopen(char *name){
                 fprintf(stderr, "Error creating %12s", name);
                 return -1;}
 
+            int start = -1;
+
+            for (i = 0; i < BLOCKSIZE;i++){
+                if (fat_entry_table[i].data == BLOCKSIZE){
+                    start = i;
+                    break;
+                }
+            }
+
+            if (start == -1) return -1;
+
+            int data = first_open();
+            if (data == -1) return -1;
+            set_used(data);
+
             new->read_ptr = 0;
             new->write_ptr = 0;
             new->size = 0;
@@ -271,10 +281,6 @@ int sfs_fopen(char *name){
             root_directory[i].indx = start;
             write_blocks(ROOT, ROOT_SIZE, root_directory);
 
-            int data = first_open();
-            if (data == -1) return -1;
-
-            set_used(data);
             fat_entry_table[start].data = data;
             write_blocks(FAT, FAT_SIZE, fat_entry_table);
             return fd;
@@ -284,13 +290,14 @@ int sfs_fopen(char *name){
 }
 
 int sfs_fclose(int fileID){
+    if (file_descriptor_table[fileID] == NULL)
+        return -1;
     free(file_descriptor_table[fileID]);
     file_descriptor_table[fileID] = NULL;
     return 0;
 }
 
 int sfs_fwrite(int fileID, char *buf, int length){
-    printf("writing to file: %d\n", fileID);
     int length_orig = length;
     if (buf == NULL || length < 0 ||
         fileID >= filesOpen || file_descriptor_table[fileID] == NULL)
@@ -313,9 +320,7 @@ int sfs_fwrite(int fileID, char *buf, int length){
     int offset = 0;
     while (length > 0){
         read_blocks(DATA_START + current->data, 1, disk_buff);
-        // printf("A: %s\n", disk_buff);
         memcpy(disk_buff + j, buf + offset, (BLOCKSIZE - j < length ? BLOCKSIZE - j :  length));
-        // printf("B: %s\n", disk_buff);
         write_blocks(DATA_START + current->data, 1, disk_buff);
 
         length -= (BLOCKSIZE - j);
@@ -324,18 +329,22 @@ int sfs_fwrite(int fileID, char *buf, int length){
         i++;
 
         if (current->next == BLOCKSIZE && length > 0){
-            int next = first_open();
-            if (next == -1) return -1;
-            set_used(next);
             int k;
+            int found = 0;
             for (k = 0; k < BLOCKSIZE; k++){
                 if (fat_entry_table[k].data == BLOCKSIZE){
+                    int next = first_open();
+                    if (next == -1) return -1;
+                    set_used(next);
                     current->next = k;
                     fat_entry_table[k].data = next;
                     write_blocks(FAT, FAT_SIZE, fat_entry_table);
+                    found = 1;
                     break;
                 }
             }
+            if (!found)
+                return -1;
         }
 
         if (length > 0)
@@ -357,12 +366,11 @@ int sfs_fwrite(int fileID, char *buf, int length){
     }
 
     free(disk_buff);
-    return 0;
+    return length_orig;
 }
 
 // Negative return value => invalid file ID
 int sfs_fread(int fileID, char *buf, int length){
-    int length_orig = length;
     if (length < 0 || buf == NULL ||
         fileID >= filesOpen || file_descriptor_table[fileID] == NULL)
         return -1;
@@ -371,6 +379,10 @@ int sfs_fread(int fileID, char *buf, int length){
 
     fat_entry *current = &(fat_entry_table[to_read->start]);
 
+    if (to_read->read_ptr + length > to_read->size)
+        length = to_read->size - to_read->read_ptr;
+
+    int length_orig = length;
     char *disk_buff = malloc(BLOCKSIZE);   // Buffer to read sector into
     int i = (to_read->read_ptr) / BLOCKSIZE;   // which sector read ptr is in
     int j = (to_read->read_ptr) % BLOCKSIZE; // how far into sector read_ptr is
@@ -379,17 +391,13 @@ int sfs_fread(int fileID, char *buf, int length){
         current = &(fat_entry_table[current->next]);
         i--;}
 
-    i = 0;  // how many sectors we've read into buf
-
     int offset = 0;
     while (length > 0){
         read_blocks(DATA_START + current->data, 1, disk_buff);
-
         memcpy(buf + offset, disk_buff + j, (BLOCKSIZE - j < length ? BLOCKSIZE - j :  length));
         length -= (BLOCKSIZE - j);
         offset += (BLOCKSIZE - j);
         j = 0;
-        i++;
 
 
         if (current->next == BLOCKSIZE && length > 0){
@@ -398,9 +406,9 @@ int sfs_fread(int fileID, char *buf, int length){
         if (length > 0){
             current = &(fat_entry_table[current->next]);}
     }
-
+    free(disk_buff);
     to_read->read_ptr += length_orig;
-    return 0;
+    return length_orig;
 }
 
 // Negative return value => invalid file ID
@@ -422,9 +430,9 @@ int sfs_remove(char *file){
             strcpy(to_remove->name,"\0");
             to_remove->size =0;
             fat_entry *fat_tr = &(fat_entry_table[to_remove->indx]);
-            to_remove->indx = 0;
+            to_remove->indx = BLOCKSIZE;
 
-            while (fat_tr != NULL){
+            while (1){
                 set_unused(fat_tr->data);
                 fat_tr->data = BLOCKSIZE;
                 if (fat_tr->next == BLOCKSIZE)
@@ -447,7 +455,7 @@ int sfs_remove(char *file){
 int first_open(){
     unsigned int *buff = malloc(BLOCKSIZE);
     if (!buff){
-        fprintf(stderr, "Malloc failed in 'first_open'");
+        fprintf(stderr, "Malloc failed in 'first_open'\n");
         return -1;}
 
     read_blocks(FREE_LIST, 1, buff);
@@ -457,28 +465,25 @@ int first_open(){
         int f = ffs(buff[i]);
         if (f){
             int j = f + i*8*sizeof(unsigned int);
-            return j;
+            return j - 1;
         }
     }
 
     return -1;
-
-
 }
 
 // Set indx to allocated
 void set_used(unsigned short indx){
     int i = indx/(8*sizeof(unsigned int));   // where in bit array to flip
-    int j = indx % (8*sizeof(unsigned int)); // which bit to flip
+    int j = indx % (8*sizeof(unsigned int)); //  which bit to flip
     unsigned int *buff = malloc(BLOCKSIZE);
 
     if (!buff){
-        fprintf(stderr, "Malloc failed in 'set'");
+        fprintf(stderr, "Malloc failed in 'set'\n");
         return;}
 
     read_blocks(FREE_LIST, 1, buff);
-    buff[i] &= ~(1 << (j-1));
-
+    buff[i] &= ~(1 << j);
     write_blocks(FREE_LIST, 1, buff);
 
 }
@@ -489,10 +494,10 @@ void set_unused(unsigned short indx){
     int j = indx % (8*sizeof(unsigned int)); // which bit to flip
     unsigned int *buff = malloc(BLOCKSIZE);
     if (!buff){
-        fprintf(stderr, "Malloc failed in 'clear'");
+        fprintf(stderr, "Malloc failed in 'clear'\n");
         return;}
 
     read_blocks(FREE_LIST, 1, buff);
-    buff[i] |= 1 << (j-1);
+    buff[i] |= 1 << j;
     write_blocks(FREE_LIST, 1, buff);
 }
