@@ -14,7 +14,7 @@
  * do not _require_ that you support this many files. This is just to
  * test the behavior of your code.
  */
-#define MAX_FD 100 
+#define MAX_FD 100
 
 /* The maximum number of bytes we'll try to write to a file. If you
  * support much shorter or larger files for some reason, feel free to
@@ -33,12 +33,12 @@ static char test_str[] = "A mathematician is a machine for turning coffee into t
  * each 'x' is a random upper-case letter (A-Z). Feel free to modify
  * this function if your implementation requires shorter filenames, or
  * supports longer or different file name conventions.
- * 
+ *
  * The return value is a pointer to the new string, which may be
  * released by a call to free() when you are done using the string.
  */
 
-char *rand_name() 
+char *rand_name()
 {
     char fname[MAX_FNAME_LENGTH];
     int i;
@@ -177,6 +177,7 @@ main(int argc, char **argv)
         sfs_ls();
     }
 
+
     /* Now try to close and delete the closed and deleted files. Don't
      * care about the return codes, really, but just want to make sure
      * this doesn't cause a problem.
@@ -236,7 +237,7 @@ main(int argc, char **argv)
 
             sfs_fread(fds[i], &ch, 1);
             if (ch != test_str[j]) {
-                fprintf(stderr, "ERROR: Read wrong byte from %s at %d (%d,%d)\n", 
+                fprintf(stderr, "ERROR: Read wrong byte from %s at %d (%d,%d)\n",
                         names[i], j, ch, test_str[j]);
                 error_count++;
                 break;
@@ -261,7 +262,7 @@ main(int argc, char **argv)
 
             for (j = 0; j < strlen(test_str); j++) {
                 if (test_str[j] != fixedbuf[j]) {
-                    fprintf(stderr, "ERROR: Wrong byte in %s at %d (%d,%d)\n", 
+                    fprintf(stderr, "ERROR: Wrong byte in %s at %d (%d,%d)\n",
                             names[i], j, fixedbuf[j], test_str[j]);
                     error_count++;
                     break;
