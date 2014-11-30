@@ -57,7 +57,7 @@ typedef struct fd_entry {
     unsigned short start;
 } fd_entry;
 
-int numUsed, filesOpen;
+int filesOpen;
 root_entry *root_directory;
 fd_entry **file_descriptor_table;
 fat_entry *fat_entry_table;
@@ -93,7 +93,6 @@ int mksfs(int fresh){
         super_buff[5] = FAT;        // Location of 1st block of FAT
         super_buff[6] = FAT_SIZE;   // Number of blocks for FAT
         super_buff[7] = DATA_START; // Location of 1st block of user data
-        super_buff[8] = 0;          // Number of used blocks (= BLOCKSIZE - empty)
 
         write_blocks(SUPERBLOCK, 1, super_buff);
         free(super_buff);
@@ -155,8 +154,7 @@ int mksfs(int fresh){
 
     read_blocks(SUPERBLOCK, 1, super_block);
 
-    // initialize variables
-    numUsed = super_block[8];
+    // Initialize variables
     filesOpen = 0;
 
     root_directory = malloc(sizeof(root_entry) * BLOCKSIZE);
@@ -464,8 +462,7 @@ int first_open(){
     for (i = 0; i < BLOCKSIZE/sizeof(unsigned int); i++){
         int f = ffs(buff[i]);
         if (f){
-            int j = f + i*8*sizeof(unsigned int);
-            return j - 1;
+            return f + i*8*sizeof(unsigned int) -1;
         }
     }
 

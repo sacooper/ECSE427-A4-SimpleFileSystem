@@ -15,4 +15,4 @@ libsfs.a: sfs_api.c sfs_api.h disk_emu.c disk_emu.h
 	ar -cr libsfs.a sfs_api.o disk_emu.o
 
 clean:
-	rm *.o libsfs.a sfs_htest sfs_ftest
+	rm *.o libsfs.a sfs_htest sfs_ftest my.sfs
