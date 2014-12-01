@@ -10,22 +10,22 @@ ECSE 427 / COMP 310 - Operating Systems
 SCOTT COOPER
 260503452
 
-Programming Assignment 2 - Simple File Systems
+Programming Assignment 2 - Simple File System
 ************************************************/
 
 
 // Important block locations
 #define SUPERBLOCK 0
 #define FREE_LIST 1
-#define ROOT 2
+#define ROOT_LOC 2
 #define ROOT_SIZE 20
-#define FAT ROOT+ROOT_SIZE
+#define FAT_LOC ROOT_LOC+ROOT_SIZE
 #define FAT_SIZE 4
-#define DATA_START FAT+FAT_SIZE
+#define DATA_START FAT_LOC+FAT_SIZE
 // block size in bytes
 #define BLOCKSIZE 2048
 
-// super + free sector list + root + FAT
+// super + free sector list + root + FAT_LOC
 #define NUMBLOCKS 1+BLOCKSIZE+ROOT_SIZE+FAT_SIZE
 
 // Assume at most 12 characters for filename
@@ -34,33 +34,28 @@ Programming Assignment 2 - Simple File Systems
 // filename for file system
 #define FILENAME "my.sfs"
 
-// make sure EOF exists
-#ifndef EOF
-#define EOF -1
-#endif
-
-typedef struct root_entry {
+typedef struct directory_entry {
     char name[MAX_FNAME_LENGTH + 1];
     unsigned short indx;
     unsigned int size;
-} root_entry;
+} directory_entry;
 
-typedef struct fat_entry {
+typedef struct FAT_entry {
     unsigned short data;
     unsigned short next;
-} fat_entry;
+} FAT_entry;
 
-typedef struct fd_entry {
+typedef struct file_descriptor {
     unsigned int read_ptr;
     unsigned int write_ptr;
     unsigned int size;
     unsigned short start;
-} fd_entry;
+} file_descriptor;
 
 int filesOpen;
-root_entry *root_directory;
-fd_entry **file_descriptor_table;
-fat_entry *fat_entry_table;
+directory_entry *root_directory;
+file_descriptor **file_descriptor_table;
+FAT_entry *FAT;
 
 int first_open();
 void set_used(unsigned short indx);
@@ -88,10 +83,10 @@ int mksfs(int fresh){
         super_buff[0] = BLOCKSIZE;  // Size of each block
         super_buff[1] = NUMBLOCKS;  // Number of blocks on disk (including super)
         super_buff[1] = FREE_LIST;  // Block containing free list
-        super_buff[2] = ROOT;       // Location of 1st block of root directory
+        super_buff[2] = ROOT_LOC;       // Location of 1st block of root directory
         super_buff[4] = ROOT_SIZE;  // Number of for root directory
-        super_buff[5] = FAT;        // Location of 1st block of FAT
-        super_buff[6] = FAT_SIZE;   // Number of blocks for FAT
+        super_buff[5] = FAT_LOC;        // Location of 1st block of FAT_LOC
+        super_buff[6] = FAT_SIZE;   // Number of blocks for FAT_LOC
         super_buff[7] = DATA_START; // Location of 1st block of user data
 
         write_blocks(SUPERBLOCK, 1, super_buff);
@@ -113,30 +108,30 @@ int mksfs(int fresh){
         free(free_buff);
 
         // Create root directory
-        root_entry *new_root_buff = malloc(BLOCKSIZE*sizeof(root_entry));
+        directory_entry *new_root_buff = malloc(BLOCKSIZE*sizeof(directory_entry));
 
         if (!new_root_buff){
             fprintf(stderr, "Error initializing root directory");
             return -1;}
 
-        for (i = 0; i < BLOCKSIZE*ROOT_SIZE/sizeof(root_entry); i++)
-            new_root_buff[i] = (root_entry) {.name = "\0", .size=0, .indx = BLOCKSIZE };
+        for (i = 0; i < BLOCKSIZE*ROOT_SIZE/sizeof(directory_entry); i++)
+            new_root_buff[i] = (directory_entry) {.name = "\0", .size=0, .indx = BLOCKSIZE };
 
-        write_blocks(ROOT, ROOT_SIZE, new_root_buff);
+        write_blocks(ROOT_LOC, ROOT_SIZE, new_root_buff);
         free(new_root_buff);
 
         // Create File Allocation Table
-        fat_entry *new_fat_table = malloc(BLOCKSIZE * sizeof(fat_entry));
+        FAT_entry *new_fat_table = malloc(BLOCKSIZE * sizeof(FAT_entry));
 
         if (!new_fat_table){
-            fprintf(stderr, "Error intitializing FAT");
+            fprintf(stderr, "Error intitializing FAT_LOC");
             return -1;}
 
         for (i = 0; i < BLOCKSIZE; i++){
             new_fat_table[i].data = BLOCKSIZE;
             new_fat_table[i].next = BLOCKSIZE;}
 
-        write_blocks(FAT, FAT_SIZE, new_fat_table);
+        write_blocks(FAT_LOC, FAT_SIZE, new_fat_table);
         free(new_fat_table);
 
     } else {
@@ -157,28 +152,28 @@ int mksfs(int fresh){
     // Initialize variables
     filesOpen = 0;
 
-    root_directory = malloc(sizeof(root_entry) * BLOCKSIZE);
-    fat_entry_table = malloc(sizeof(fat_entry) * BLOCKSIZE);
+    root_directory = malloc(sizeof(directory_entry) * BLOCKSIZE);
+    FAT = malloc(sizeof(FAT_entry) * BLOCKSIZE);
 
-    if (!root_directory || !fat_entry_table){
+    if (!root_directory || !FAT){
         fprintf(stderr, "Error in malloc at mksfs");
         exit(1);}
 
-    read_blocks(ROOT, ROOT_SIZE, root_directory);
-    read_blocks(FAT, FAT_SIZE, fat_entry_table);
+    read_blocks(ROOT_LOC, ROOT_SIZE, root_directory);
+    read_blocks(FAT_LOC, FAT_SIZE, FAT);
 
     return 0;
 }
 
 void sfs_ls(void){
-    if (!root_directory){
+    if (!root_directory){   // Check file system is initialized
         fprintf(stderr,
             "Error in sfs_ls.\nFile system neads to be initialized first");
         return;}
 
     int i;
 
-    for (i = 0; i < BLOCKSIZE; i++){
+    for (i = 0; i < BLOCKSIZE; i++){        // Print out files and sizes
         if (strncmp(root_directory[i].name, "\0", 1) != 0){
             printf("%12s: %d\n", root_directory[i].name, root_directory[i].size);
         }
@@ -186,38 +181,48 @@ void sfs_ls(void){
 }
 
 int sfs_fopen(char *name){
+    // Check name is valid
     if (strlen(name) > MAX_FNAME_LENGTH)
         return -1;
 
+    // Make sure file system has been initialized
     if (!root_directory){
         fprintf(stderr,
             "Error in sfs_fopen.\nFile system neads to be opened first");
         return -1;}
 
     int i;
+
+    // Check if file exists
     for (i = 0; i < BLOCKSIZE; i++){
         if (strcmp(root_directory[i].name, name) == 0){
             int fd = -1, j;
 
+            // Make sure we haven't already opened this file.
+            // If so, return the original file descriptor
             for (j = 0; j < filesOpen; j++){
                 if (file_descriptor_table[j] && root_directory[i].indx == file_descriptor_table[j]->start)
                     return j;
             }
 
+            // Otherwise, create an FD for that file, assuming we have room
             for (j = 0; j < filesOpen; j++){
                 if (!file_descriptor_table[j]){
-                    file_descriptor_table[j] = malloc(sizeof(fd_entry));
+                    file_descriptor_table[j] = malloc(sizeof(file_descriptor));
                     fd = j;
                     break;
                 }
             }
 
+            // If we don't have room, make room
             if (fd == -1){
-                file_descriptor_table = realloc(file_descriptor_table, (1+filesOpen)*(sizeof(fd_entry *)));
-                file_descriptor_table[filesOpen] = (fd_entry *) malloc(sizeof(fd_entry));
+                file_descriptor_table = realloc(file_descriptor_table, (1+filesOpen)*(sizeof(file_descriptor *)));
+                file_descriptor_table[filesOpen] = (file_descriptor *) malloc(sizeof(file_descriptor));
                 fd = filesOpen++;
             }
-            fd_entry *new = file_descriptor_table[fd];
+
+            // Initialize file descriptor with correct info
+            file_descriptor *new = file_descriptor_table[fd];
             if (!new){
                 fprintf(stderr, "Error opening %12s", name);
                 return -1;}
@@ -230,34 +235,40 @@ int sfs_fopen(char *name){
         }
     }
 
+    // Otherwise, the file has't been created, find a space and create it
     for (i = 0; i < BLOCKSIZE; i++){
+
+        // Find an empty spot
         if (strncmp(root_directory[i].name, "\0", 1) == 0){
 
             int fd = -1, j;
+
+            // Find a location in the FD table
             for (j = 0; j < filesOpen; j++){
                 if (file_descriptor_table[j] == NULL){
-                    file_descriptor_table[j] = malloc(sizeof(fd_entry));
+                    file_descriptor_table[j] = malloc(sizeof(file_descriptor));
                     fd = j;
                     break;
                 }
             }
 
             if (fd == -1){
-                file_descriptor_table = realloc(file_descriptor_table, (1+filesOpen)*(sizeof(fd_entry *)));
-                file_descriptor_table[filesOpen] = (fd_entry *) malloc(sizeof(fd_entry));
+                file_descriptor_table = realloc(file_descriptor_table, (1+filesOpen)*(sizeof(file_descriptor *)));
+                file_descriptor_table[filesOpen] = (file_descriptor *) malloc(sizeof(file_descriptor));
                 fd = filesOpen++;
             }
 
-            fd_entry *new = file_descriptor_table[fd];
+            file_descriptor *new = file_descriptor_table[fd];
 
             if (!new){
                 fprintf(stderr, "Error creating %12s", name);
                 return -1;}
 
+            // Find first available FAT table entry
             int start = -1;
 
             for (i = 0; i < BLOCKSIZE;i++){
-                if (fat_entry_table[i].data == BLOCKSIZE){
+                if (FAT[i].data == BLOCKSIZE){
                     start = i;
                     break;
                 }
@@ -265,10 +276,12 @@ int sfs_fopen(char *name){
 
             if (start == -1) return -1;
 
+            // Find first available place for first block of data
             int data = first_open();
             if (data == -1) return -1;
             set_used(data);
 
+            // Initialize valus
             new->read_ptr = 0;
             new->write_ptr = 0;
             new->size = 0;
@@ -277,19 +290,22 @@ int sfs_fopen(char *name){
             strncpy(root_directory[i].name, name, 13);
             root_directory[i].size = 0;
             root_directory[i].indx = start;
-            write_blocks(ROOT, ROOT_SIZE, root_directory);
+            write_blocks(ROOT_LOC, ROOT_SIZE, root_directory);
 
-            fat_entry_table[start].data = data;
-            write_blocks(FAT, FAT_SIZE, fat_entry_table);
+            FAT[start].data = data;
+            write_blocks(FAT_LOC, FAT_SIZE, FAT);
             return fd;
         }
     }
     return -1;
 }
 
+// Make sure that the file descriptor is valid
 int sfs_fclose(int fileID){
-    if (file_descriptor_table[fileID] == NULL)
+    // Make sure fileID is valid and fileID hasn't already been closed
+    if (fileID >= filesOpen || file_descriptor_table[fileID] == NULL)
         return -1;
+
     free(file_descriptor_table[fileID]);
     file_descriptor_table[fileID] = NULL;
     return 0;
@@ -297,26 +313,28 @@ int sfs_fclose(int fileID){
 
 int sfs_fwrite(int fileID, char *buf, int length){
     int length_orig = length;
+
+    // Make sure we have a valid fileID
     if (buf == NULL || length < 0 ||
         fileID >= filesOpen || file_descriptor_table[fileID] == NULL)
         return -1;
 
-    fd_entry *to_write = file_descriptor_table[fileID];
+    file_descriptor *to_write = file_descriptor_table[fileID];
 
-    fat_entry *current = &(fat_entry_table[to_write->start]);
+    FAT_entry *current = &(FAT[to_write->start]);
 
     char *disk_buff = malloc(BLOCKSIZE);        // Buffer to read sector into
     int i = (to_write->write_ptr) / BLOCKSIZE;  // which sector write_ptr is in
     int j = (to_write->write_ptr) % BLOCKSIZE;  // how far into sector write_ptr is
 
     while (i > 0){  // find correct sector
-        current = &(fat_entry_table[current->next]);
+        current = &(FAT[current->next]);
         i--;}
 
     i = 0;  // how many sectors we've read into buf
 
     int offset = 0;
-    while (length > 0){
+    while (length > 0){     // keep writing while there's something left to write
         read_blocks(DATA_START + current->data, 1, disk_buff);
         memcpy(disk_buff + j, buf + offset, (BLOCKSIZE - j < length ? BLOCKSIZE - j :  length));
         write_blocks(DATA_START + current->data, 1, disk_buff);
@@ -330,13 +348,13 @@ int sfs_fwrite(int fileID, char *buf, int length){
             int k;
             int found = 0;
             for (k = 0; k < BLOCKSIZE; k++){
-                if (fat_entry_table[k].data == BLOCKSIZE){
+                if (FAT[k].data == BLOCKSIZE){
                     int next = first_open();
                     if (next == -1) return -1;
                     set_used(next);
                     current->next = k;
-                    fat_entry_table[k].data = next;
-                    write_blocks(FAT, FAT_SIZE, fat_entry_table);
+                    FAT[k].data = next;
+                    write_blocks(FAT_LOC, FAT_SIZE, FAT);
                     found = 1;
                     break;
                 }
@@ -346,19 +364,22 @@ int sfs_fwrite(int fileID, char *buf, int length){
         }
 
         if (length > 0)
-            current = &(fat_entry_table[current->next]);
+            current = &(FAT[current->next]);
     }
 
+    // Increase the size of the file as necessary
     to_write->size = to_write->write_ptr + length_orig > to_write->size
                         ? to_write->write_ptr + length_orig
                         : to_write->size;
 
+    // Increase the write_ptr
     to_write->write_ptr += length_orig;
 
     for (i = 0; i < BLOCKSIZE; i++){
+        // Increase size of root_directory entry
         if (to_write->start == root_directory[i].indx){
             root_directory[i].size = to_write->size;
-            write_blocks(ROOT, ROOT_SIZE, root_directory);
+            write_blocks(ROOT_LOC, ROOT_SIZE, root_directory);
             break;
         }
     }
@@ -373,10 +394,11 @@ int sfs_fread(int fileID, char *buf, int length){
         fileID >= filesOpen || file_descriptor_table[fileID] == NULL)
         return -1;
 
-    fd_entry *to_read = file_descriptor_table[fileID];
+    file_descriptor *to_read = file_descriptor_table[fileID];
 
-    fat_entry *current = &(fat_entry_table[to_read->start]);
+    FAT_entry *current = &(FAT[to_read->start]);
 
+    // Make sure we aren't reading past the last written byte of the file
     if (to_read->read_ptr + length > to_read->size)
         length = to_read->size - to_read->read_ptr;
 
@@ -386,7 +408,7 @@ int sfs_fread(int fileID, char *buf, int length){
     int j = (to_read->read_ptr) % BLOCKSIZE; // how far into sector read_ptr is
 
     while (i > 0){  // find correct sector
-        current = &(fat_entry_table[current->next]);
+        current = &(FAT[current->next]);
         i--;}
 
     int offset = 0;
@@ -397,12 +419,12 @@ int sfs_fread(int fileID, char *buf, int length){
         offset += (BLOCKSIZE - j);
         j = 0;
 
-
+        // check if trying to read past end of file
         if (current->next == BLOCKSIZE && length > 0){
             return -1;}
 
         if (length > 0){
-            current = &(fat_entry_table[current->next]);}
+            current = &(FAT[current->next]);}
     }
     free(disk_buff);
     to_read->read_ptr += length_orig;
@@ -424,10 +446,10 @@ int sfs_remove(char *file){
     int i;
     for (i = 0; i < BLOCKSIZE; i++){
         if (strncmp(root_directory[i].name, file, 13) == 0){
-            root_entry *to_remove = &(root_directory[i]);
+            directory_entry *to_remove = &(root_directory[i]);
             strcpy(to_remove->name,"\0");
             to_remove->size =0;
-            fat_entry *fat_tr = &(fat_entry_table[to_remove->indx]);
+            FAT_entry *fat_tr = &(FAT[to_remove->indx]);
             to_remove->indx = BLOCKSIZE;
 
             while (1){
@@ -435,12 +457,12 @@ int sfs_remove(char *file){
                 fat_tr->data = BLOCKSIZE;
                 if (fat_tr->next == BLOCKSIZE)
                     break;
-                fat_entry *fat_tr_next = &(fat_entry_table[fat_tr->next]);
+                FAT_entry *fat_tr_next = &(FAT[fat_tr->next]);
                 fat_tr->next = BLOCKSIZE;
                 fat_tr = fat_tr_next;
             }
 
-            write_blocks(FAT, FAT_SIZE, fat_entry_table);
+            write_blocks(FAT_LOC, FAT_SIZE, FAT);
             return 0;
 
         }
